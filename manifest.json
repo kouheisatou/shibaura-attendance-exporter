@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "芝浦工大 勤怠エクスポーター",
+  "version": "1.0.0",
+  "description": "芝浦工業大学アルバイト管理システム(STST)から全ての勤怠データを自動でエクスポートするChrome拡張機能",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://asrv.sic.shibaura-it.ac.jp/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://asrv.sic.shibaura-it.ac.jp/STST/ja/Menu/Proj*"],
+      "js": ["content-proj.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://asrv.sic.shibaura-it.ac.jp/STST/ja/Menu/AttendanceBook*"],
+      "js": ["content-attendance.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
