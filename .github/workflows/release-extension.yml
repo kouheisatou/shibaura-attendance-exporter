@@ -1,0 +1,51 @@
+name: Release Chrome Extension
+
+on:
+  push:
+    branches:
+      - release
+
+permissions:
+  contents: write
+
+jobs:
+  package-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build package metadata
+        id: meta
+        run: |
+          VERSION="$(jq -r '.version' manifest.json)"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          TAG="v${VERSION}-${SHORT_SHA}"
+          ZIP_FILE="shibaura-attendance-exporter-${TAG}.zip"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "zip_file=${ZIP_FILE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Package extension
+        run: |
+          zip -r "${{ steps.meta.outputs.zip_file }}" \
+            manifest.json \
+            background.js \
+            content-attendance.js \
+            content-proj.js \
+            popup.html \
+            popup.js \
+            icon48.png \
+            icon128.png
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: リリース ${{ steps.meta.outputs.tag }}
+          body: |
+            自動生成リリース
+            - manifest version: ${{ steps.meta.outputs.version }}
+            - source commit: ${{ github.sha }}
+          files: ${{ steps.meta.outputs.zip_file }}
