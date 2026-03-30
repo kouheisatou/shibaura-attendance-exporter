@@ -109,6 +109,27 @@
     return false;
   }
 
+  // Wait for 勤怠簿 button to appear inside the modal (content may load asynchronously)
+  async function waitForKintaiButton() {
+    const start = Date.now();
+    while (Date.now() - start < MODAL_MAX_WAIT) {
+      // Search by ID
+      const kinBtn = document.getElementById('proj_reg_list_btn');
+      if (kinBtn && kinBtn.getBoundingClientRect().width > 0) {
+        return kinBtn;
+      }
+      // Fallback: search by button text containing 勤怠簿
+      const allBtns = document.querySelectorAll('.modal button, .ui-popup-container button, [role="dialog"] button');
+      for (const btn of allBtns) {
+        if (btn.textContent.includes('勤怠') && btn.getBoundingClientRect().width > 0) {
+          return btn;
+        }
+      }
+      await sleep(MODAL_POLL_INTERVAL);
+    }
+    return null;
+  }
+
   // ===== Job Collection =====
   async function collectAllJobs() {
     await log('検索条件を「全て」に設定...', 'info');
@@ -155,58 +176,68 @@
       await goToPage(jobPage);
     }
 
-    // 3) Find the job button and click it
+    // 3) Find the job button on the correct page
+    let buttonToClick = null;
+
     const jobs = getVisibleJobIds();
     const target = jobs.find(j => j.id === jobId);
-    if (!target) {
+    if (target) {
+      buttonToClick = target.button;
+    } else {
       // Fallback: try all pages
       const totalPages = Math.ceil(26 / 15); // rough
       for (let p = 1; p <= totalPages; p++) {
         await goToPage(p);
         const retry = getVisibleJobIds().find(j => j.id === jobId);
-        if (retry) { retry.button.click(); break; }
-      }
-      // If still not found
-      const retryJobs = getVisibleJobIds();
-      if (!retryJobs.find(j => j.id === jobId)) {
-        await log(`${jobId}: テーブル上に見つかりません - スキップ`, 'warn');
-        return 'skipped';
+        if (retry) {
+          buttonToClick = retry.button;
+          break;
+        }
       }
     }
 
-    // Re-fetch after possible page changes
-    const freshJobs = getVisibleJobIds();
-    const freshTarget = freshJobs.find(j => j.id === jobId);
-    if (!freshTarget) {
-      await log(`${jobId}: ボタンが見つかりません - スキップ`, 'warn');
+    if (!buttonToClick) {
+      await log(`${jobId}: テーブル上に見つかりません - スキップ`, 'warn');
       return 'skipped';
     }
 
     await log(`処理中: ${jobName} (${jobId})`, 'info');
     await updateState({ currentJob: `${jobName.substring(0, 35)}...` });
 
-    // 4) Click button to open modal
-    freshTarget.button.click();
+    // 4) Click button to open modal (once only)
+    await log(`${jobId}: ボタンクリック...`, 'info');
+    buttonToClick.click();
 
     // 5) Wait for modal to fully appear by polling for visible content
     const modalReady = await waitForModal();
+    // Log what we found for debugging
+    const modalEl = document.querySelector('.modal.show, .modal.in, .ui-popup-container, [role="dialog"]');
+    if (modalEl) {
+      const tag = modalEl.tagName;
+      const cls = modalEl.className?.substring(0, 60);
+      const h = modalEl.getBoundingClientRect().height;
+      await log(`${jobId}: モーダル検出 <${tag} class="${cls}"> h=${h}`, 'info');
+    } else {
+      await log(`${jobId}: モーダル要素なし`, 'warn');
+    }
 
     if (!modalReady) {
       await log(`${jobId} ${jobName}: モーダルが開けませんでした - スキップ`, 'warn');
-      const closeBtn = document.querySelector('.modal button, .ui-popup-container .ui-btn');
+      // Try to close any lingering modal
+      const closeBtn = document.querySelector('[role="dialog"] button[class*="close"], .modal .close, .ui-popup-container .ui-btn');
       if (closeBtn) closeBtn.click();
       await sleep(500);
       return 'no_attendance';
     }
 
-    // 6) Check if 勤怠簿 button exists in modal (by ID)
-    const kinBtn = document.getElementById('proj_reg_list_btn');
+    // 6) Poll for 勤怠簿 button (modal content may load asynchronously)
+    const kinBtn = await waitForKintaiButton();
 
-    if (!kinBtn || kinBtn.getBoundingClientRect().width === 0) {
+    if (!kinBtn) {
       // No attendance book for this job (e.g. TA)
       await log(`${jobId} ${jobName}: 勤怠簿なし - スキップ`, 'warn');
-      // Close modal
-      const closeBtn = document.querySelector('.modal button, .ui-popup-container .ui-btn');
+      // Close modal - use specific close button selector to avoid hitting unrelated buttons
+      const closeBtn = document.querySelector('[role="dialog"] button[class*="close"], .modal .close, .ui-popup-container .ui-btn');
       if (closeBtn) closeBtn.click();
       await sleep(500);
       return 'no_attendance';
