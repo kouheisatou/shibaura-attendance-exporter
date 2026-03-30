@@ -7,6 +7,8 @@
   const PROJ_URL = 'https://asrv.sic.shibaura-it.ac.jp/STST/ja/Menu/Proj';
   const WAIT = 2000;
   const MODAL_WAIT = 1500;
+  const MODAL_POLL_INTERVAL = 300;
+  const MODAL_MAX_WAIT = 10000;
 
   // ===== Utility =====
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -45,6 +47,9 @@
     }
     if (val === null) throw new Error('ALL_OPTION_NOT_FOUND');
 
+    // Skip if already set to 全て (avoids unnecessary page reload)
+    if (select.value === val) return;
+
     select.value = val;
     select.dispatchEvent(new Event('change', { bubbles: true }));
     await sleep(WAIT);
@@ -78,6 +83,28 @@
         await sleep(WAIT);
         return true;
       }
+    }
+    return false;
+  }
+
+  // Wait for modal/dialog to appear by polling for visible modal content
+  async function waitForModal() {
+    const start = Date.now();
+    while (Date.now() - start < MODAL_MAX_WAIT) {
+      // Check for various modal/dialog indicators
+      const modal = document.querySelector('.modal.show, .modal.in, .ui-popup-container, [role="dialog"]');
+      if (modal && modal.getBoundingClientRect().height > 0) {
+        // Modal is visible, wait a bit more for content to render
+        await sleep(MODAL_WAIT);
+        return true;
+      }
+      // Also check if proj_reg_list_btn appeared (some modals might not match selectors above)
+      const kinBtn = document.getElementById('proj_reg_list_btn');
+      if (kinBtn && kinBtn.getBoundingClientRect().width > 0) {
+        await sleep(500);
+        return true;
+      }
+      await sleep(MODAL_POLL_INTERVAL);
     }
     return false;
   }
@@ -160,22 +187,32 @@
 
     // 4) Click button to open modal
     freshTarget.button.click();
-    await sleep(MODAL_WAIT);
 
-    // 5) Check if 勤怠簿 button exists in modal (by ID)
+    // 5) Wait for modal to fully appear by polling for visible content
+    const modalReady = await waitForModal();
+
+    if (!modalReady) {
+      await log(`${jobId} ${jobName}: モーダルが開けませんでした - スキップ`, 'warn');
+      const closeBtn = document.querySelector('.modal button, .ui-popup-container .ui-btn');
+      if (closeBtn) closeBtn.click();
+      await sleep(500);
+      return 'no_attendance';
+    }
+
+    // 6) Check if 勤怠簿 button exists in modal (by ID)
     const kinBtn = document.getElementById('proj_reg_list_btn');
 
     if (!kinBtn || kinBtn.getBoundingClientRect().width === 0) {
       // No attendance book for this job (e.g. TA)
       await log(`${jobId} ${jobName}: 勤怠簿なし - スキップ`, 'warn');
       // Close modal
-      const closeBtn = document.querySelector('.modal button');
+      const closeBtn = document.querySelector('.modal button, .ui-popup-container .ui-btn');
       if (closeBtn) closeBtn.click();
       await sleep(500);
       return 'no_attendance';
     }
 
-    // 6) Save state and click 勤怠簿 → navigates to AttendanceBook
+    // 7) Save state and click 勤怠簿 → navigates to AttendanceBook
     await chrome.storage.local.set({
       currentScrapeJob: { jobId, jobName },
       scrapeControl: { action: 'continue' }
@@ -247,6 +284,9 @@
 
   async function startScraping() {
     try {
+      // Immediately change action to 'running' to prevent duplicate starts on page reload
+      await chrome.storage.local.set({ scrapeControl: { action: 'running' } });
+
       await log('=== スクレイピング開始 ===', 'success');
       await updateState({ status: 'running', totalRecords: 0, completedJobs: 0 });
 
@@ -302,6 +342,10 @@
 
     // Fresh start requested (from popup button)
     if (scrapeControl?.action === 'start' && scrapeState?.status === 'running') {
+      if (scrapeStarted) return;
+      scrapeStarted = true;
+      // Immediately change to 'running' to prevent duplicate starts
+      await chrome.storage.local.set({ scrapeControl: { action: 'running' } });
       await sleep(1000);
       startScraping();
       return;
@@ -309,6 +353,8 @@
 
     // Resume after returning from AttendanceBook
     if (scrapeState?.status === 'running' && scrapeControl?.action === 'resume_proj') {
+      if (scrapeStarted) return;
+      scrapeStarted = true;
       await log('Projページに復帰', 'info');
       await sleep(WAIT);
       try {
@@ -322,13 +368,42 @@
           await updateState({ status: 'error' });
         }
       }
+      return;
+    }
+
+    // Resume if page reloaded mid-scraping (e.g. select change caused reload)
+    if (scrapeState?.status === 'running' && scrapeControl?.action === 'running') {
+      if (scrapeStarted) return;
+      scrapeStarted = true;
+      const { scrapeJobList, scrapeJobIndex } = await chrome.storage.local.get(['scrapeJobList', 'scrapeJobIndex']);
+      if (scrapeJobList && scrapeJobIndex != null) {
+        await log('ページリロードから復帰 - 次のジョブへ', 'info');
+        await sleep(WAIT);
+        try {
+          await processNextJob();
+        } catch (e) {
+          if (e.message === 'USER_STOP') {
+            await log('ユーザーにより中止されました', 'warn');
+            await updateState({ status: 'stopped' });
+          } else {
+            await log(`エラー: ${e.message}`, 'error');
+            await updateState({ status: 'error' });
+          }
+        }
+      }
     }
   }
+
+  // Prevent double execution
+  let scrapeStarted = false;
 
   // Message listener (for direct messages from popup)
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'START_SCRAPE') {
-      startScraping();
+      if (!scrapeStarted) {
+        scrapeStarted = true;
+        startScraping();
+      }
       sendResponse({ ok: true });
     }
     return true;

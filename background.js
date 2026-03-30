@@ -9,18 +9,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const { scrapeState } = await chrome.storage.local.get('scrapeState');
   if (!scrapeState || scrapeState.status !== 'running') return;
 
-  // When navigating to Proj page during scraping, tell content script to resume
-  if (tab.url.includes('/STST/ja/Menu/Proj')) {
-    const { scrapeControl } = await chrome.storage.local.get('scrapeControl');
-
-    if (scrapeControl && scrapeControl.action === 'start') {
-      // Initial start
-      setTimeout(() => {
-        chrome.tabs.sendMessage(tabId, { type: 'START_SCRAPE' }).catch(() => {});
-      }, 2000);
-    }
-    // resume_proj is handled by content-proj.js's checkAndResume on load
-  }
+  // When navigating to Proj page during scraping:
+  // autoStart() in content-proj.js handles both 'start' and 'resume_proj' actions,
+  // so background.js does not need to send additional messages.
+  // This prevents duplicate execution when page reloads (e.g. from select change).
   // AttendanceBook page auto-runs via content-attendance.js main()
 });
 
